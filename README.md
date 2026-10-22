@@ -7,5 +7,6 @@
 
 **Spam model for Gheychi**
    * `Trainer/` trains the spam model used by the Gheychi SMS app on `data.json`. Pushing a tag `model-v<N>` (e.g. `model-v3`) runs `.github/workflows/train.yml`, which trains model version N and publishes `spam.mlnet` and `manifest.json` as the latest release. The app offers that release as an update, and the app's own release build bundles it.
+   * `Trainer` can also train on a directory containing `data.json` alongside user export files (`gheychi-*.json`). Files are prioritized so newer exports override earlier labels. In addition to `spam.mlnet` and `manifest.json`, the trainer writes `gheychi-model-v<N>.zip` which can be imported directly into the Gheychi app as a custom model.
    * `Normalizer/TextNormalizer.cs` is the normalization applied both to new dataset entries and, inside the app, to every message before it is scored. The app keeps an identical copy; `Normalizer/vectors.json` pins its output and is checked by the tests in both repositories. Any change to the normalizer must bump `TextNormalizer.Version` and regenerate the vectors in both places.
    * Releases in this repository should only be model releases, since the app reads the latest one.

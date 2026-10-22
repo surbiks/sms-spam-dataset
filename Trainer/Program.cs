@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -6,11 +7,11 @@ using Microsoft.ML;
 using Microsoft.ML.Data;
 using Normalizer;
 
-// Trainer <data.json> <version> <output directory>
-// Writes spam.mlnet and the manifest.json the Gheychi app reads to load it.
+// Trainer <data.json | folder> <version> <output directory>
+// Writes spam.mlnet, manifest.json, and gheychi-model-v{version}.zip the Gheychi app reads to load it.
 if (args.Length != 3 || !int.TryParse(args[1], NumberStyles.None, CultureInfo.InvariantCulture, out var version) || version <= 0)
 {
-    Console.Error.WriteLine("Usage: Trainer <data.json> <version> <output directory>");
+    Console.Error.WriteLine("Usage: Trainer <data.json | folder> <version> <output directory>");
     return 2;
 }
 
@@ -26,23 +27,77 @@ const float AppThreshold = 0.85f;
 const double MinMacroAccuracy = 0.90;
 const double MaxRealHiddenRate = 0.04;
 
-var dataPath = args[0];
+var inputPath = args[0];
 var outputDirectory = args[2];
 
-var raw = JsonSerializer.Deserialize<List<DatasetItem>>(File.ReadAllText(dataPath)) ?? [];
+// A folder input allows combining official data with user exports (gheychi-*.json). Later files take priority;
+// non-gheychi files are read first, then gheychi exports in alphabetical (chronological) order.
+List<(string Path, int Priority)> files;
+if (Directory.Exists(inputPath))
+{
+    var nonGheychi = Directory.GetFiles(inputPath, "*.json", SearchOption.TopDirectoryOnly)
+        .Where(f => !Path.GetFileName(f).StartsWith("gheychi-", StringComparison.Ordinal))
+        .OrderBy(Path.GetFileName, StringComparer.Ordinal);
 
-// The app scores normalized text, so the model is trained on exactly what TextNormalizer produces, even for rows
-// added before the normalizer reached its current form. A text labelled both ways teaches nothing and is dropped.
-var rows = raw
-    .Select(item => new Row { Text = TextNormalizer.Normalize(item.Text), Label = item.Label == 1 ? SpamLabel : HamLabel })
-    .Where(row => row.Text.Length > 0)
-    .GroupBy(row => row.Text)
-    .Where(group => group.Select(row => row.Label).Distinct().Count() == 1)
-    .Select(group => group.First())
-    .ToList();
+    var gheychi = Directory.GetFiles(inputPath, "*.json", SearchOption.TopDirectoryOnly)
+        .Where(f => Path.GetFileName(f).StartsWith("gheychi-", StringComparison.Ordinal))
+        .OrderBy(Path.GetFileName, StringComparer.Ordinal);
+
+    files = nonGheychi.Concat(gheychi)
+        .Select((path, index) => (Path: path, Priority: index))
+        .ToList();
+}
+else
+{
+    files = [(inputPath, 0)];
+}
+
+var totalItems = 0;
+var rawRows = new List<PrioritizedRow>();
+
+foreach (var (filePath, priority) in files)
+{
+    var items = JsonSerializer.Deserialize<List<DatasetItem>>(File.ReadAllText(filePath)) ?? [];
+    Console.WriteLine($"Read {items.Count} rows from {filePath}");
+    totalItems += items.Count;
+    foreach (var item in items)
+    {
+        var normalized = TextNormalizer.Normalize(item.Text);
+        if (normalized.Length > 0)
+        {
+            rawRows.Add(new PrioritizedRow(normalized, item.Label == 1 ? SpamLabel : HamLabel, priority));
+        }
+    }
+}
+
+// The app scores normalized text, so the model is trained on exactly what TextNormalizer produces.
+// If files disagree on a text's label, the highest-priority file wins; conflict inside that file drops the text.
+var overridden = 0;
+var rows = new List<Row>();
+
+foreach (var group in rawRows.GroupBy(r => r.Text))
+{
+    var highestPriority = group.Max(r => r.Priority);
+    var top = group.Where(r => r.Priority == highestPriority).ToList();
+    var topLabels = top.Select(r => r.Label).Distinct().ToList();
+
+    if (topLabels.Count > 1)
+    {
+        continue;
+    }
+
+    rows.Add(new Row { Text = group.Key, Label = topLabels[0] });
+
+    if (group.Select(r => r.Label).Distinct().Count() > 1)
+    {
+        overridden++;
+    }
+}
+
+Console.WriteLine($"{overridden} texts took the label of a newer file");
 
 var spamCount = rows.Count(row => row.Label == SpamLabel);
-Console.WriteLine($"{raw.Count} items, {rows.Count} distinct usable rows ({spamCount} spam, {rows.Count - spamCount} ham)");
+Console.WriteLine($"{totalItems} items, {rows.Count} distinct usable rows ({spamCount} spam, {rows.Count - spamCount} ham)");
 
 var ml = new MLContext(Seed);
 var data = ml.Data.LoadFromEnumerable(rows);
@@ -113,7 +168,20 @@ var manifest = new JsonObject
         ["spamCaughtRate"] = Math.Round(spamCaughtRate, 4)
     }
 };
-File.WriteAllText(Path.Combine(outputDirectory, "manifest.json"), manifest.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+var manifestPath = Path.Combine(outputDirectory, "manifest.json");
+File.WriteAllText(manifestPath, manifest.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+
+var zipPath = Path.Combine(outputDirectory, $"gheychi-model-v{version}.zip");
+if (File.Exists(zipPath))
+{
+    File.Delete(zipPath);
+}
+using (var archive = ZipFile.Open(zipPath, ZipArchiveMode.Create))
+{
+    archive.CreateEntryFromFile(manifestPath, "manifest.json");
+    archive.CreateEntryFromFile(modelPath, ModelFile);
+}
+
 Console.WriteLine($"Model v{version} written to {outputDirectory}");
 return 0;
 
@@ -154,6 +222,8 @@ static void VerifyLoads(string modelPath)
 }
 
 sealed record DatasetItem(string Text, int Label);
+
+sealed record PrioritizedRow(string Text, string Label, int Priority);
 
 sealed class Row
 {
