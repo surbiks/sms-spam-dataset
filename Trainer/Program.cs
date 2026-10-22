@@ -3,6 +3,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Microsoft.ML;
 using Microsoft.ML.Data;
 using Normalizer;
@@ -31,17 +32,19 @@ var inputPath = args[0];
 var outputDirectory = args[2];
 
 // A folder input allows combining official data with user exports (gheychi-*.json). Later files take priority;
-// non-gheychi files are read first, then gheychi exports in alphabetical (chronological) order.
+// non-gheychi files (skipping manifest.json) are read first, then gheychi exports ordered by timestamp then name.
 List<(string Path, int Priority)> files;
 if (Directory.Exists(inputPath))
 {
     var nonGheychi = Directory.GetFiles(inputPath, "*.json", SearchOption.TopDirectoryOnly)
-        .Where(f => !Path.GetFileName(f).StartsWith("gheychi-", StringComparison.Ordinal))
+        .Where(f => !string.Equals(Path.GetFileName(f), "manifest.json", StringComparison.OrdinalIgnoreCase)
+                 && !Path.GetFileName(f).StartsWith("gheychi-", StringComparison.Ordinal))
         .OrderBy(Path.GetFileName, StringComparer.Ordinal);
 
     var gheychi = Directory.GetFiles(inputPath, "*.json", SearchOption.TopDirectoryOnly)
         .Where(f => Path.GetFileName(f).StartsWith("gheychi-", StringComparison.Ordinal))
-        .OrderBy(Path.GetFileName, StringComparer.Ordinal);
+        .OrderBy(f => Regex.Match(Path.GetFileName(f), @"\d{8}-\d{4}").Value, StringComparer.Ordinal)
+        .ThenBy(Path.GetFileName, StringComparer.Ordinal);
 
     files = nonGheychi.Concat(gheychi)
         .Select((path, index) => (Path: path, Priority: index))
