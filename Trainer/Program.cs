@@ -67,9 +67,7 @@ foreach (var (filePath, priority) in files)
     {
         var normalized = TextNormalizer.Normalize(item.Text);
         if (normalized.Length > 0)
-        {
             rawRows.Add(new PrioritizedRow(normalized, item.Label == 1 ? SpamLabel : HamLabel, priority));
-        }
     }
 }
 
@@ -85,16 +83,12 @@ foreach (var group in rawRows.GroupBy(r => r.Text))
     var topLabels = top.Select(r => r.Label).Distinct().ToList();
 
     if (topLabels.Count > 1)
-    {
         continue;
-    }
 
     rows.Add(new Row { Text = group.Key, Label = topLabels[0] });
 
     if (group.Select(r => r.Label).Distinct().Count() > 1)
-    {
         overridden++;
-    }
 }
 
 Console.WriteLine($"{overridden} texts took the label of a newer file");
@@ -176,9 +170,7 @@ File.WriteAllText(manifestPath, manifest.ToJsonString(new JsonSerializerOptions 
 
 var zipPath = Path.Combine(outputDirectory, $"gheychi-model-v{version}.zip");
 if (File.Exists(zipPath))
-{
     File.Delete(zipPath);
-}
 using (var archive = ZipFile.Open(zipPath, ZipArchiveMode.Create))
 {
     archive.CreateEntryFromFile(manifestPath, "manifest.json");
